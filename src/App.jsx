@@ -255,6 +255,7 @@ function App() {
   const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState(null);
   const [selectedMonth, setSelectedMonth] = useState(currentMonth);
+  const [viewMode, setViewMode] = useState('month');
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
   const [importRows, setImportRows] = useState([]);
@@ -299,16 +300,24 @@ function App() {
     );
   }, [user]);
 
-  const monthTransactions = useMemo(
-    () => transactions.filter((item) => item.date?.startsWith(selectedMonth)),
-    [transactions, selectedMonth],
+  const selectedYear = selectedMonth.slice(0, 4);
+  const periodLabel = viewMode === 'year' ? `${selectedYear} 全年` : selectedMonth;
+
+  const periodTransactions = useMemo(
+    () =>
+      transactions.filter((item) =>
+        viewMode === 'year'
+          ? item.date?.startsWith(selectedYear)
+          : item.date?.startsWith(selectedMonth),
+      ),
+    [transactions, selectedMonth, selectedYear, viewMode],
   );
 
   const summary = useMemo(() => {
-    const income = monthTransactions
+    const income = periodTransactions
       .filter((item) => item.type === 'income')
       .reduce((sum, item) => sum + Number(item.amount), 0);
-    const expense = monthTransactions
+    const expense = periodTransactions
       .filter((item) => item.type === 'expense')
       .reduce((sum, item) => sum + Number(item.amount), 0);
 
@@ -316,27 +325,60 @@ function App() {
       income,
       expense,
       balance: income - expense,
-      count: monthTransactions.length,
+      count: periodTransactions.length,
     };
-  }, [monthTransactions]);
+  }, [periodTransactions]);
+
+  const monthlyAverage = useMemo(() => {
+    const byMonth = new Map();
+
+    transactions.forEach((item) => {
+      if (!item.date) {
+        return;
+      }
+
+      const month = item.date.slice(0, 7);
+      const current = byMonth.get(month) || { income: 0, expense: 0 };
+      current[item.type] += Number(item.amount) || 0;
+      byMonth.set(month, current);
+    });
+
+    if (!byMonth.size) {
+      return { income: 0, expense: 0, months: 0 };
+    }
+
+    const totals = [...byMonth.values()].reduce(
+      (sum, item) => ({
+        income: sum.income + item.income,
+        expense: sum.expense + item.expense,
+      }),
+      { income: 0, expense: 0 },
+    );
+
+    return {
+      income: totals.income / byMonth.size,
+      expense: totals.expense / byMonth.size,
+      months: byMonth.size,
+    };
+  }, [transactions]);
 
   const trendData = useMemo(() => {
     const byDate = new Map();
 
-    monthTransactions.forEach((item) => {
-      const key = item.date.slice(5);
+    periodTransactions.forEach((item) => {
+      const key = viewMode === 'year' ? item.date.slice(0, 7) : item.date.slice(5);
       const current = byDate.get(key) || { date: key, income: 0, expense: 0 };
       current[item.type] += Number(item.amount);
       byDate.set(key, current);
     });
 
     return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
-  }, [monthTransactions]);
+  }, [periodTransactions, viewMode]);
 
   const categoryData = useMemo(() => {
     const byCategory = new Map();
 
-    monthTransactions
+    periodTransactions
       .filter((item) => item.type === 'expense')
       .forEach((item) => {
         byCategory.set(item.category, (byCategory.get(item.category) || 0) + Number(item.amount));
@@ -345,7 +387,7 @@ function App() {
     return [...byCategory.entries()]
       .map(([name, value]) => ({ name, value }))
       .sort((a, b) => b.value - a.value);
-  }, [monthTransactions]);
+  }, [periodTransactions]);
 
   const importedSourceIds = useMemo(
     () =>
@@ -574,13 +616,38 @@ function App() {
         </div>
       </header>
 
-      <section className="month-row" aria-label="月份筛选">
-        <label htmlFor="month">月份</label>
+      <section className="month-row" aria-label="时间范围筛选">
+        <div className="segmented period-toggle" role="group" aria-label="查看范围">
+          <button
+            type="button"
+            className={viewMode === 'month' ? 'active' : ''}
+            onClick={() => setViewMode('month')}
+          >
+            月份
+          </button>
+          <button
+            type="button"
+            className={viewMode === 'year' ? 'active' : ''}
+            onClick={() => setViewMode('year')}
+          >
+            全年
+          </button>
+        </div>
+        <label htmlFor="month">{viewMode === 'year' ? '年份' : '月份'}</label>
         <input
           id="month"
-          type="month"
-          value={selectedMonth}
-          onChange={(event) => setSelectedMonth(event.target.value)}
+          type={viewMode === 'year' ? 'number' : 'month'}
+          min="2000"
+          max="2100"
+          value={viewMode === 'year' ? selectedYear : selectedMonth}
+          onChange={(event) => {
+            if (viewMode === 'year') {
+              setSelectedMonth(`${event.target.value || selectedYear}-01`);
+              return;
+            }
+
+            setSelectedMonth(event.target.value);
+          }}
         />
       </section>
 
@@ -750,6 +817,8 @@ function App() {
             <Stat label="支出" value={currency.format(summary.expense)} tone="expense" />
             <Stat label="结余" value={currency.format(summary.balance)} tone="balance" />
             <Stat label="笔数" value={`${summary.count} 笔`} tone="count" />
+            <Stat label="月均收入" value={currency.format(monthlyAverage.income)} tone="average-income" />
+            <Stat label="月均支出" value={currency.format(monthlyAverage.expense)} tone="average-expense" />
           </div>
 
           <div className="charts-grid">
@@ -805,12 +874,12 @@ function App() {
           <section className="list-panel" aria-labelledby="list-title">
             <div className="section-head">
               <h2 id="list-title">账目明细</h2>
-              <span>{selectedMonth}</span>
+              <span>{periodLabel}</span>
             </div>
 
-            {monthTransactions.length ? (
+            {periodTransactions.length ? (
               <ul className="transaction-list">
-                {monthTransactions.map((item) => (
+                {periodTransactions.map((item) => (
                   <li key={item.id} className="transaction-item">
                     <div className={`type-dot ${item.type}`} />
                     <div className="transaction-main">
@@ -833,7 +902,7 @@ function App() {
                 ))}
               </ul>
             ) : (
-              <div className="empty-list">这个月份还没有记录。</div>
+              <div className="empty-list">这个时间范围还没有记录。</div>
             )}
           </section>
         </section>
