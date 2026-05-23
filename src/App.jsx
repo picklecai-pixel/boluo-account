@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import {
   addDoc,
@@ -16,6 +16,8 @@ import { onAuthStateChanged } from 'firebase/auth';
 import {
   Area,
   AreaChart,
+  Bar,
+  BarChart,
   CartesianGrid,
   Cell,
   Legend,
@@ -61,6 +63,14 @@ const wechatExpenseRules = [
   ['医疗', ['医院', '药', '诊所', '体检', '医疗']],
   ['学习', ['课程', '教育', '书', '培训', '学习']],
 ];
+
+const wechatIgnoreRules = [
+  ['转账/收付款', ['转账', '朋友', '二维码收款', '扫码收款', '群收款', '红包']],
+  ['提现/充值', ['提现', '充值', '零钱通', '转入', '转出']],
+  ['还款', ['信用卡还款', '还款']],
+];
+
+const allMonths = Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, '0'));
 
 function parseCsv(text) {
   const rows = [];
@@ -128,6 +138,52 @@ function parseDate(value) {
     .split('-')
     .map((part, index) => (index === 0 ? part : part.padStart(2, '0')))
     .join('-');
+}
+
+function normalizeText(value) {
+  return cleanCell(value).replace(/\s+/g, '').toLowerCase();
+}
+
+function transactionMonth(date) {
+  return date?.slice(0, 7) || '';
+}
+
+function transactionYear(date) {
+  return date?.slice(0, 4) || '';
+}
+
+function makeTransactionFingerprint(item) {
+  const amount = Number(item.amount) || 0;
+  const note = normalizeText(item.note || item.description || '');
+  return `${item.date || ''}|${item.type || ''}|${amount.toFixed(2)}|${note.slice(0, 48)}`;
+}
+
+function detectWechatIgnoreReason(text, status) {
+  if (status && !status.includes('支付成功') && !status.includes('已完成')) {
+    return status;
+  }
+
+  const matched = wechatIgnoreRules.find(([, keywords]) =>
+    keywords.some((keyword) => text.includes(keyword)),
+  );
+
+  return matched ? matched[0] : '';
+}
+
+function hasImportMarker(markers, item) {
+  return Boolean(
+    (item.sourceId && markers.ids.has(item.sourceId)) ||
+      (item.sourceFingerprint && markers.fingerprints.has(item.sourceFingerprint)),
+  );
+}
+
+function makeImportKey(item) {
+  return item.sourceId || item.sourceFingerprint || makeTransactionFingerprint(item);
+}
+
+function escapeCsvCell(value) {
+  const text = String(value ?? '');
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
 function mapWechatCategory(type, text) {
@@ -231,17 +287,30 @@ function parseWechatTransactions(rows) {
     const remark = cleanCell(row[indexes.remark]);
     const transactionNo = cleanCell(row[indexes.transactionNo]);
     const description = [counterparty, product, remark].filter(Boolean).join(' · ');
-    const category = mapWechatCategory(type, `${counterparty} ${product} ${remark} ${status}`);
+    const combinedText = `${counterparty} ${product} ${remark} ${status}`;
+    const category = mapWechatCategory(type, combinedText);
+    const ignoreReason = detectWechatIgnoreReason(combinedText, status);
+    const fingerprint = makeTransactionFingerprint({
+      type,
+      amount,
+      date,
+      note: description,
+    });
 
     items.push({
       type,
       amount,
       category,
       date,
+      year: transactionYear(date),
+      month: transactionMonth(date),
       note: description || '微信账单',
       source: 'wechat',
       sourceId: transactionNo || `${date}-${type}-${amount}-${description}`,
+      sourceFingerprint: fingerprint,
       sourceStatus: status,
+      included: !ignoreReason,
+      ignoreReason,
     });
 
     return items;
@@ -262,6 +331,13 @@ function App() {
   const [importFileName, setImportFileName] = useState('');
   const [importError, setImportError] = useState('');
   const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState(null);
+  const [lastImport, setLastImport] = useState(null);
+  const [searchText, setSearchText] = useState('');
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const entryPanelRef = useRef(null);
+  const amountInputRef = useRef(null);
 
   useEffect(() => {
     if (!hasFirebaseConfig) {
@@ -313,11 +389,60 @@ function App() {
     [transactions, selectedMonth, selectedYear, viewMode],
   );
 
+  const categoryOptions = useMemo(() => {
+    const result = {
+      income: new Map(categories.income.map((category) => [category, 0])),
+      expense: new Map(categories.expense.map((category) => [category, 0])),
+    };
+
+    transactions.forEach((item) => {
+      if (!result[item.type] || !item.category) {
+        return;
+      }
+
+      result[item.type].set(item.category, (result[item.type].get(item.category) || 0) + 1);
+    });
+
+    return {
+      income: [...result.income.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-CN'))
+        .map(([category]) => category),
+      expense: [...result.expense.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-CN'))
+        .map(([category]) => category),
+    };
+  }, [transactions]);
+
+  const filterCategoryOptions = useMemo(
+    () => [...new Set(periodTransactions.map((item) => item.category).filter(Boolean))].sort(),
+    [periodTransactions],
+  );
+
+  const visibleTransactions = useMemo(() => {
+    const keyword = normalizeText(searchText);
+
+    return periodTransactions.filter((item) => {
+      if (typeFilter !== 'all' && item.type !== typeFilter) {
+        return false;
+      }
+
+      if (categoryFilter !== 'all' && item.category !== categoryFilter) {
+        return false;
+      }
+
+      if (!keyword) {
+        return true;
+      }
+
+      return normalizeText(`${item.date} ${item.category} ${item.note} ${item.amount}`).includes(keyword);
+    });
+  }, [categoryFilter, periodTransactions, searchText, typeFilter]);
+
   const summary = useMemo(() => {
-    const income = periodTransactions
+    const income = visibleTransactions
       .filter((item) => item.type === 'income')
       .reduce((sum, item) => sum + Number(item.amount), 0);
-    const expense = periodTransactions
+    const expense = visibleTransactions
       .filter((item) => item.type === 'expense')
       .reduce((sum, item) => sum + Number(item.amount), 0);
 
@@ -325,9 +450,9 @@ function App() {
       income,
       expense,
       balance: income - expense,
-      count: periodTransactions.length,
+      count: visibleTransactions.length,
     };
-  }, [periodTransactions]);
+  }, [visibleTransactions]);
 
   const monthlyAverage = useMemo(() => {
     const byMonth = new Map();
@@ -365,7 +490,7 @@ function App() {
   const trendData = useMemo(() => {
     const byDate = new Map();
 
-    periodTransactions.forEach((item) => {
+    visibleTransactions.forEach((item) => {
       const key = viewMode === 'year' ? item.date.slice(0, 7) : item.date.slice(5);
       const current = byDate.get(key) || { date: key, income: 0, expense: 0 };
       current[item.type] += Number(item.amount);
@@ -373,12 +498,34 @@ function App() {
     });
 
     return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
-  }, [periodTransactions, viewMode]);
+  }, [visibleTransactions, viewMode]);
+
+  const yearlyTrendData = useMemo(() => {
+    const rows = allMonths.map((month) => ({
+      date: `${selectedYear}-${month}`,
+      label: `${Number(month)}月`,
+      income: 0,
+      expense: 0,
+      balance: 0,
+    }));
+
+    visibleTransactions.forEach((item) => {
+      const monthIndex = Number(item.date?.slice(5, 7)) - 1;
+      if (Number.isNaN(monthIndex) || !rows[monthIndex]) {
+        return;
+      }
+
+      rows[monthIndex][item.type] += Number(item.amount) || 0;
+      rows[monthIndex].balance = rows[monthIndex].income - rows[monthIndex].expense;
+    });
+
+    return rows;
+  }, [selectedYear, visibleTransactions]);
 
   const categoryData = useMemo(() => {
     const byCategory = new Map();
 
-    periodTransactions
+    visibleTransactions
       .filter((item) => item.type === 'expense')
       .forEach((item) => {
         byCategory.set(item.category, (byCategory.get(item.category) || 0) + Number(item.amount));
@@ -387,24 +534,84 @@ function App() {
     return [...byCategory.entries()]
       .map(([name, value]) => ({ name, value }))
       .sort((a, b) => b.value - a.value);
-  }, [periodTransactions]);
+  }, [visibleTransactions]);
 
-  const importedSourceIds = useMemo(
-    () =>
-      new Set(
-        transactions
-          .filter((item) => item.source === 'wechat' && item.sourceId)
-          .map((item) => item.sourceId),
-      ),
-    [transactions],
-  );
+  const topExpenseCategories = useMemo(() => categoryData.slice(0, 5), [categoryData]);
+
+  const groupedTransactions = useMemo(() => {
+    const byDate = new Map();
+
+    visibleTransactions.forEach((item) => {
+      const current = byDate.get(item.date) || {
+        date: item.date,
+        income: 0,
+        expense: 0,
+        items: [],
+      };
+
+      current[item.type] += Number(item.amount) || 0;
+      current.items.push(item);
+      byDate.set(item.date, current);
+    });
+
+    return [...byDate.values()].sort((a, b) => b.date.localeCompare(a.date));
+  }, [visibleTransactions]);
+
+  const importedMarkers = useMemo(() => {
+    const ids = new Set();
+    const fingerprints = new Set();
+
+    transactions.forEach((item) => {
+      if (item.sourceId) {
+        ids.add(item.sourceId);
+      }
+
+      fingerprints.add(item.sourceFingerprint || makeTransactionFingerprint(item));
+    });
+
+    return { ids, fingerprints };
+  }, [transactions]);
 
   const importableRows = useMemo(
-    () => importRows.filter((item) => !importedSourceIds.has(item.sourceId)),
-    [importRows, importedSourceIds],
+    () => {
+      const seen = new Set();
+
+      return importRows.filter((item) => {
+        if (item.included === false || hasImportMarker(importedMarkers, item)) {
+          return false;
+        }
+
+        const key = makeImportKey(item);
+        if (seen.has(key)) {
+          return false;
+        }
+
+        seen.add(key);
+        return true;
+      });
+    },
+    [importRows, importedMarkers],
   );
 
   const importSummary = useMemo(() => {
+    const ignored = importRows.filter((item) => item.included === false).length;
+    const seen = new Set();
+    let duplicate = 0;
+
+    importRows.forEach((item) => {
+      if (item.included === false) {
+        return;
+      }
+
+      const key = makeImportKey(item);
+      if (hasImportMarker(importedMarkers, item) || seen.has(key)) {
+        duplicate += 1;
+        return;
+      }
+
+      seen.add(key);
+    });
+
     const income = importableRows
       .filter((item) => item.type === 'income')
       .reduce((sum, item) => sum + item.amount, 0);
@@ -416,19 +623,54 @@ function App() {
       income,
       expense,
       total: importRows.length,
-      duplicate: importRows.length - importableRows.length,
+      ignored,
+      duplicate,
       importable: importableRows.length,
     };
-  }, [importRows, importableRows]);
+  }, [importRows, importableRows, importedMarkers]);
 
   function updateForm(field, value) {
     setForm((current) => {
       const next = { ...current, [field]: value };
       if (field === 'type') {
-        next.category = categories[value][0];
+        next.category = categoryOptions[value][0];
       }
       return next;
     });
+  }
+
+  function updateImportRow(index, field, value) {
+    setImportRows((current) =>
+      current.map((item, itemIndex) => {
+        if (itemIndex !== index) {
+          return item;
+        }
+
+        const next = { ...item, [field]: value };
+
+        if (field === 'type') {
+          next.category = categoryOptions[value][0];
+        }
+
+        if (field === 'date') {
+          next.year = transactionYear(value);
+          next.month = transactionMonth(value);
+        }
+
+        if (field === 'amount' || field === 'date' || field === 'note' || field === 'type') {
+          next.sourceFingerprint = makeTransactionFingerprint(next);
+        }
+
+        return next;
+      }),
+    );
+  }
+
+  function scrollToEntry() {
+    setEditingId(null);
+    setForm({ ...emptyForm, date: today });
+    entryPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    window.setTimeout(() => amountInputRef.current?.focus(), 260);
   }
 
   async function handleSubmit(event) {
@@ -453,6 +695,8 @@ function App() {
       amount,
       category: form.category.trim(),
       date: form.date,
+      year: transactionYear(form.date),
+      month: transactionMonth(form.date),
       note: form.note.trim(),
       userId: user.uid,
       updatedAt: serverTimestamp(),
@@ -470,7 +714,7 @@ function App() {
         setStatus('已添加。');
       }
 
-      setForm({ ...emptyForm, date: form.date, type: form.type, category: categories[form.type][0] });
+      setForm({ ...emptyForm, date: form.date, type: form.type, category: categoryOptions[form.type][0] });
       setEditingId(null);
     } catch (error) {
       setStatus(`保存失败：${error.message}`);
@@ -537,6 +781,8 @@ function App() {
       const rows = await readWechatRows(file);
       const parsed = parseWechatTransactions(rows);
       setImportRows(parsed);
+      setImportProgress(null);
+      setLastImport(null);
 
       if (!parsed.length) {
         setImportError('没有识别到可导入的收支记录。');
@@ -551,6 +797,7 @@ function App() {
     setImportRows([]);
     setImportFileName('');
     setImportError('');
+    setImportProgress(null);
   }
 
   async function confirmWechatImport() {
@@ -563,14 +810,19 @@ function App() {
     setImportError('');
 
     try {
+      const batchId = `wechat-${Date.now()}`;
+      const importedIds = [];
+
       for (let index = 0; index < importableRows.length; index += 450) {
         const batch = writeBatch(db);
         const chunk = importableRows.slice(index, index + 450);
 
         chunk.forEach((item) => {
           const transactionRef = doc(collection(db, 'transactions'));
+          importedIds.push(transactionRef.id);
           batch.set(transactionRef, {
             ...item,
+            importBatchId: batchId,
             userId: user.uid,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
@@ -578,15 +830,71 @@ function App() {
         });
 
         await batch.commit();
+        setImportProgress({
+          done: Math.min(index + chunk.length, importableRows.length),
+          total: importableRows.length,
+        });
       }
 
       setStatus(`已导入 ${importableRows.length} 笔微信账单。`);
+      setLastImport({ ids: importedIds, count: importedIds.length, batchId });
       clearImport();
     } catch (error) {
       setImportError(`导入失败：${error.message}`);
     } finally {
       setImporting(false);
     }
+  }
+
+  async function undoLastImport() {
+    if (!lastImport?.ids?.length) {
+      return;
+    }
+
+    setBusy(true);
+    setStatus('');
+
+    try {
+      for (let index = 0; index < lastImport.ids.length; index += 450) {
+        const batch = writeBatch(db);
+        lastImport.ids.slice(index, index + 450).forEach((id) => {
+          batch.delete(doc(db, 'transactions', id));
+        });
+        await batch.commit();
+      }
+
+      setStatus(`已撤销上次导入的 ${lastImport.count} 笔账单。`);
+      setLastImport(null);
+    } catch (error) {
+      setStatus(`撤销失败：${error.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function exportBackup() {
+    const headers = ['日期', '类型', '分类', '金额', '备注', '来源'];
+    const rows = transactions
+      .slice()
+      .sort((a, b) => b.date.localeCompare(a.date))
+      .map((item) => [
+        item.date,
+        item.type === 'income' ? '收入' : '支出',
+        item.category,
+        Number(item.amount || 0).toFixed(2),
+        item.note || '',
+        item.source || 'manual',
+      ]);
+    const csv = [headers, ...rows]
+      .map((row) => row.map(escapeCsvCell).join(','))
+      .join('\n');
+    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `boluo-account-backup-${today}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
   }
 
   if (!authReady) {
@@ -651,8 +959,33 @@ function App() {
         />
       </section>
 
+      <section className="filter-row" aria-label="账目筛选">
+        <input
+          type="search"
+          value={searchText}
+          onChange={(event) => setSearchText(event.target.value)}
+          placeholder="搜索备注、分类、金额"
+        />
+        <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
+          <option value="all">全部类型</option>
+          <option value="expense">支出</option>
+          <option value="income">收入</option>
+        </select>
+        <select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}>
+          <option value="all">全部分类</option>
+          {filterCategoryOptions.map((category) => (
+            <option key={category} value={category}>
+              {category}
+            </option>
+          ))}
+        </select>
+        <button type="button" className="ghost-button" onClick={exportBackup}>
+          导出备份
+        </button>
+      </section>
+
       <div className="workspace">
-        <section className="entry-panel" aria-labelledby="entry-title">
+        <section className="entry-panel" aria-labelledby="entry-title" ref={entryPanelRef}>
           <div className="section-head">
             <h2 id="entry-title">{editingId ? '编辑账目' : '新增账目'}</h2>
             {editingId && (
@@ -683,6 +1016,7 @@ function App() {
             <label>
               金额
               <input
+                ref={amountInputRef}
                 type="number"
                 min="0"
                 step="0.01"
@@ -699,7 +1033,7 @@ function App() {
                 value={form.category}
                 onChange={(event) => updateForm('category', event.target.value)}
               >
-                {categories[form.type].map((category) => (
+                {categoryOptions[form.type].map((category) => (
                   <option key={category} value={category}>
                     {category}
                   </option>
@@ -733,6 +1067,11 @@ function App() {
           </form>
 
           {status && <p className="status">{status}</p>}
+          {lastImport?.ids?.length ? (
+            <button type="button" className="undo-button" onClick={undoLastImport} disabled={busy}>
+              撤销上次导入
+            </button>
+          ) : null}
         </section>
 
         <section className="dashboard" aria-label="统计和图表">
@@ -760,6 +1099,7 @@ function App() {
                 <div className="import-summary">
                   <span>识别 {importSummary.total} 笔</span>
                   <span>可导入 {importSummary.importable} 笔</span>
+                  <span>自动忽略 {importSummary.ignored} 笔</span>
                   <span>重复 {importSummary.duplicate} 笔</span>
                   <span>收入 {currency.format(importSummary.income)}</span>
                   <span>支出 {currency.format(importSummary.expense)}</span>
@@ -769,29 +1109,103 @@ function App() {
                   <table>
                     <thead>
                       <tr>
+                        <th>导入</th>
                         <th>日期</th>
                         <th>类型</th>
                         <th>分类</th>
                         <th>金额</th>
                         <th>备注</th>
+                        <th>状态</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {importRows.slice(0, 8).map((item, index) => (
-                        <tr
-                          key={`${item.sourceId}-${index}`}
-                          className={importedSourceIds.has(item.sourceId) ? 'duplicate' : ''}
-                        >
-                          <td>{item.date}</td>
-                          <td>{item.type === 'income' ? '收入' : '支出'}</td>
-                          <td>{item.category}</td>
-                          <td>{currency.format(item.amount)}</td>
-                          <td>{item.note}</td>
-                        </tr>
-                      ))}
+                      {importRows.slice(0, 80).map((item, index) => {
+                        const duplicate = item.included !== false && !importableRows.includes(item);
+                        const ignored = item.included === false;
+
+                        return (
+                          <tr
+                            key={`${item.sourceId}-${index}`}
+                            className={`${duplicate ? 'duplicate' : ''} ${ignored ? 'ignored' : ''}`}
+                          >
+                            <td>
+                              <input
+                                type="checkbox"
+                                checked={!duplicate && item.included !== false}
+                                disabled={duplicate}
+                                onChange={(event) =>
+                                  updateImportRow(index, 'included', event.target.checked)
+                                }
+                              />
+                            </td>
+                            <td>
+                              <input
+                                className="table-control date"
+                                type="date"
+                                value={item.date}
+                                onChange={(event) => updateImportRow(index, 'date', event.target.value)}
+                              />
+                            </td>
+                            <td>
+                              <select
+                                className="table-control"
+                                value={item.type}
+                                onChange={(event) => updateImportRow(index, 'type', event.target.value)}
+                              >
+                                <option value="expense">支出</option>
+                                <option value="income">收入</option>
+                              </select>
+                            </td>
+                            <td>
+                              <select
+                                className="table-control"
+                                value={item.category}
+                                onChange={(event) => updateImportRow(index, 'category', event.target.value)}
+                              >
+                                {categoryOptions[item.type].map((category) => (
+                                  <option key={category} value={category}>
+                                    {category}
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
+                            <td>
+                              <input
+                                className="table-control amount-input"
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={item.amount}
+                                onChange={(event) =>
+                                  updateImportRow(index, 'amount', Number(event.target.value) || 0)
+                                }
+                              />
+                            </td>
+                            <td>
+                              <input
+                                className="table-control note-input"
+                                type="text"
+                                value={item.note}
+                                onChange={(event) => updateImportRow(index, 'note', event.target.value)}
+                              />
+                            </td>
+                            <td>
+                              {duplicate ? '已存在' : ignored ? item.ignoreReason || '已忽略' : '待导入'}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
+                {importRows.length > 80 && (
+                  <p className="import-state">为保持页面流畅，只预览前 80 笔；确认导入时会处理全部可导入记录。</p>
+                )}
+                {importProgress && (
+                  <p className="progress-line">
+                    已写入 {importProgress.done} / {importProgress.total} 笔
+                  </p>
+                )}
 
                 <div className="import-actions">
                   <button type="button" className="ghost-button" onClick={clearImport}>
@@ -824,7 +1238,19 @@ function App() {
           <div className="charts-grid">
             <section className="chart-panel" aria-labelledby="trend-title">
               <h2 id="trend-title">收支趋势</h2>
-              {trendData.length ? (
+              {viewMode === 'year' ? (
+                <ResponsiveContainer width="100%" height={260}>
+                  <BarChart data={yearlyTrendData} margin={{ top: 12, right: 18, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="label" tickLine={false} axisLine={false} />
+                    <YAxis tickLine={false} axisLine={false} width={52} />
+                    <Tooltip formatter={(value) => currency.format(value)} />
+                    <Legend />
+                    <Bar dataKey="income" name="收入" fill="#728f2d" radius={[6, 6, 0, 0]} />
+                    <Bar dataKey="expense" name="支出" fill="#b86414" radius={[6, 6, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : trendData.length ? (
                 <ResponsiveContainer width="100%" height={260}>
                   <AreaChart data={trendData} margin={{ top: 12, right: 18, left: 0, bottom: 0 }}>
                     <defs>
@@ -847,7 +1273,7 @@ function App() {
                   </AreaChart>
                 </ResponsiveContainer>
               ) : (
-                <EmptyChart text="这个月还没有账目" />
+                <EmptyChart text="这个时间范围还没有账目" />
               )}
             </section>
 
@@ -866,10 +1292,39 @@ function App() {
                   </PieChart>
                 </ResponsiveContainer>
               ) : (
-                <EmptyChart text="这个月还没有支出" />
+                <EmptyChart text="这个时间范围还没有支出" />
               )}
             </section>
           </div>
+
+          <section className="chart-panel category-ranking" aria-labelledby="ranking-title">
+            <div className="section-head">
+              <div>
+                <h2 id="ranking-title">支出 Top 5</h2>
+                <p>按当前筛选后的支出金额排序。</p>
+              </div>
+            </div>
+            {topExpenseCategories.length ? (
+              <div className="ranking-list">
+                {topExpenseCategories.map((item, index) => {
+                  const percent = summary.expense ? Math.round((item.value / summary.expense) * 100) : 0;
+
+                  return (
+                    <div className="ranking-item" key={item.name}>
+                      <span>{index + 1}</span>
+                      <strong>{item.name}</strong>
+                      <div className="ranking-bar" aria-hidden="true">
+                        <i style={{ width: `${Math.max(percent, 4)}%` }} />
+                      </div>
+                      <em>{currency.format(item.value)}</em>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <EmptyChart text="还没有可排序的支出分类" />
+            )}
+          </section>
 
           <section className="list-panel" aria-labelledby="list-title">
             <div className="section-head">
@@ -877,36 +1332,51 @@ function App() {
               <span>{periodLabel}</span>
             </div>
 
-            {periodTransactions.length ? (
-              <ul className="transaction-list">
-                {periodTransactions.map((item) => (
-                  <li key={item.id} className="transaction-item">
-                    <div className={`type-dot ${item.type}`} />
-                    <div className="transaction-main">
-                      <strong>{item.category}</strong>
-                      <span>{item.date}{item.note ? ` · ${item.note}` : ''}</span>
+            {groupedTransactions.length ? (
+              <div className="transaction-groups">
+                {groupedTransactions.map((group) => (
+                  <section className="day-group" key={group.date}>
+                    <div className="day-summary">
+                      <strong>{group.date}</strong>
+                      <span>
+                        收 {currency.format(group.income)} · 支 {currency.format(group.expense)}
+                      </span>
                     </div>
-                    <div className={`amount ${item.type}`}>
-                      {item.type === 'income' ? '+' : '-'}
-                      {currency.format(Number(item.amount))}
-                    </div>
-                    <div className="item-actions">
-                      <button type="button" onClick={() => startEdit(item)}>
-                        编辑
-                      </button>
-                      <button type="button" onClick={() => removeTransaction(item.id)} disabled={busy}>
-                        删除
-                      </button>
-                    </div>
-                  </li>
+                    <ul className="transaction-list">
+                      {group.items.map((item) => (
+                        <li key={item.id} className="transaction-item">
+                          <div className={`type-dot ${item.type}`} />
+                          <div className="transaction-main">
+                            <strong>{item.category}</strong>
+                            <span>{item.note || '无备注'}</span>
+                          </div>
+                          <div className={`amount ${item.type}`}>
+                            {item.type === 'income' ? '+' : '-'}
+                            {currency.format(Number(item.amount))}
+                          </div>
+                          <div className="item-actions">
+                            <button type="button" onClick={() => startEdit(item)}>
+                              编辑
+                            </button>
+                            <button type="button" onClick={() => removeTransaction(item.id)} disabled={busy}>
+                              删除
+                            </button>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
                 ))}
-              </ul>
+              </div>
             ) : (
-              <div className="empty-list">这个时间范围还没有记录。</div>
+              <div className="empty-list">当前筛选下没有记录。</div>
             )}
           </section>
         </section>
       </div>
+      <button type="button" className="quick-add-button" onClick={scrollToEntry} aria-label="快速新增">
+        +
+      </button>
     </main>
   );
 }
