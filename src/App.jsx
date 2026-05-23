@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import * as XLSX from 'xlsx';
 import {
   addDoc,
   collection,
@@ -141,34 +142,59 @@ function mapWechatCategory(type, text) {
   return rule ? rule[0] : '其他支出';
 }
 
-async function decodeWechatFile(file) {
+function parseExcelRows(buffer) {
+  const workbook = XLSX.read(buffer, { type: 'array', cellDates: false });
+  const sheetName = workbook.SheetNames[0];
+
+  if (!sheetName) {
+    throw new Error('Excel 文件里没有可读取的表格。');
+  }
+
+  return XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], {
+    header: 1,
+    raw: false,
+    defval: '',
+  });
+}
+
+async function readWechatRows(file) {
   const buffer = await file.arrayBuffer();
+  const fileName = file.name.toLowerCase();
+
+  if (fileName.endsWith('.xlsx') || fileName.endsWith('.xls')) {
+    return parseExcelRows(buffer);
+  }
+
+  if (fileName.endsWith('.pdf')) {
+    throw new Error('PDF 账单暂时不能自动导入，请在微信里导出 Excel 或 CSV 后上传。');
+  }
+
   const utf8 = new TextDecoder('utf-8').decode(buffer);
 
   if (utf8.includes('交易时间') && utf8.includes('金额')) {
-    return utf8;
+    return parseCsv(utf8);
   }
 
   try {
     const gbText = new TextDecoder('gb18030').decode(buffer);
-    return gbText.includes('交易时间') ? gbText : utf8;
+    return parseCsv(gbText.includes('交易时间') ? gbText : utf8);
   } catch {
-    return utf8;
+    return parseCsv(utf8);
   }
 }
 
-function parseWechatTransactions(text) {
-  const rows = parseCsv(text).filter((row) => row.some((cell) => cleanCell(cell)));
-  const headerIndex = rows.findIndex((row) => {
+function parseWechatTransactions(rows) {
+  const cleanRows = rows.filter((row) => row.some((cell) => cleanCell(cell)));
+  const headerIndex = cleanRows.findIndex((row) => {
     const joined = row.map(cleanCell).join(',');
     return joined.includes('交易时间') && joined.includes('金额');
   });
 
   if (headerIndex < 0) {
-    throw new Error('没有找到微信账单表头，请确认上传的是微信支付导出的 CSV 文件。');
+    throw new Error('没有找到微信账单表头，请确认上传的是微信支付导出的 Excel 或 CSV 文件。');
   }
 
-  const headers = rows[headerIndex].map(cleanCell);
+  const headers = cleanRows[headerIndex].map(cleanCell);
   const indexes = {
     date: columnIndex(headers, ['交易时间']),
     direction: columnIndex(headers, ['收/支', '收支']),
@@ -184,7 +210,7 @@ function parseWechatTransactions(text) {
     throw new Error('账单缺少交易时间、收/支或金额列。');
   }
 
-  return rows.slice(headerIndex + 1).reduce((items, row) => {
+  return cleanRows.slice(headerIndex + 1).reduce((items, row) => {
     const direction = cleanCell(row[indexes.direction]);
 
     if (!direction.includes('收入') && !direction.includes('支出')) {
@@ -466,8 +492,8 @@ function App() {
     setImportError('');
 
     try {
-      const text = await decodeWechatFile(file);
-      const parsed = parseWechatTransactions(text);
+      const rows = await readWechatRows(file);
+      const parsed = parseWechatTransactions(rows);
       setImportRows(parsed);
 
       if (!parsed.length) {
@@ -647,11 +673,15 @@ function App() {
             <div className="section-head">
               <div>
                 <h2 id="import-title">微信账单导入</h2>
-                <p>上传微信支付导出的 CSV，确认后同步到账本。</p>
+                <p>上传微信支付导出的 Excel 或 CSV，确认后同步到账本。</p>
               </div>
               <label className="file-button">
-                选择 CSV
-                <input type="file" accept=".csv,text/csv" onChange={handleImportFile} />
+                选择账单
+                <input
+                  type="file"
+                  accept=".xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                  onChange={handleImportFile}
+                />
               </label>
             </div>
 
@@ -711,7 +741,7 @@ function App() {
                 </div>
               </>
             ) : (
-              <p className="import-hint">在微信支付里导出账单 CSV 后，从这里选择文件即可预览。</p>
+              <p className="import-hint">在微信支付里导出 Excel 或 CSV 账单后，从这里选择文件即可预览。</p>
             )}
           </section>
 
