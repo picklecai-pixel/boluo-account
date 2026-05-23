@@ -1,0 +1,28 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isOwner(data) {
+      return request.auth != null && data.userId == request.auth.uid;
+    }
+
+    function isValidTransaction(data) {
+      return data.type in ['income', 'expense']
+        && data.amount is number
+        && data.amount > 0
+        && data.category is string
+        && data.date is string;
+    }
+
+    match /transactions/{transactionId} {
+      allow read, delete: if isOwner(resource.data);
+
+      allow create: if isOwner(request.resource.data)
+        && isValidTransaction(request.resource.data);
+
+      allow update: if isOwner(resource.data)
+        && isOwner(request.resource.data)
+        && isValidTransaction(request.resource.data);
+    }
+  }
+}
