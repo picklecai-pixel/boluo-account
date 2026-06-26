@@ -69,21 +69,6 @@ function Portal() {
             </button>
           </div>
         </div>
-
-        <div className="portal-status-grid" aria-label={text.statusLabel}>
-          <div>
-            <span>{text.ledger}</span>
-            <strong>{text.sync}</strong>
-          </div>
-          <div>
-            <span>{text.ai}</span>
-            <strong>{text.qwen}</strong>
-          </div>
-          <div>
-            <span>{text.entry}</span>
-            <strong>{text.onePage}</strong>
-          </div>
-        </div>
       </section>
 
       <section className="portal-workspace">
