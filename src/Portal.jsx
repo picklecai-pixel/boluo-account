@@ -1,10 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import './portal.css';
 
 const DEFAULT_SPARK_URL = 'https://fastest-context-dam-might.trycloudflare.com';
 const DEFAULT_CHAT_API_URL = 'https://atomic-divide-telecom-retailers.trycloudflare.com/api/chat';
-const SPARK_URL_KEY = 'boluoSparkUrl';
-const CHAT_API_URL_KEY = 'boluoChatApiUrl';
 const text = {
   hub: '菠萝工作台',
   title: '菠萝包烤箱',
@@ -19,15 +17,9 @@ const text = {
   feature3: '账单导入',
   feature4: '图表分析',
   qwenWindow: '菠萝包AI',
-  newWindow: '管理页',
-  sparkUrl: 'Spark 管理页地址',
-  save: '保存',
-  chatApiUrl: '聊天接口地址',
   chatPlaceholder: '问菠萝包AI一个问题...',
   send: '发送',
   sending: '思考中...',
-  clear: '清空',
-  apiHint: '当前聊天通过 HTTPS 后端转发到 Spark 里的 Qwen，并带有简单限流。',
 };
 
 const starterMessages = [
@@ -37,33 +29,14 @@ const starterMessages = [
   },
 ];
 
-function normalizeUrl(value) {
-  return value.trim().replace(/\/+$/, '');
-}
-
 function Portal() {
-  const [sparkUrl, setSparkUrl] = useState(() => {
-    const savedUrl = localStorage.getItem(SPARK_URL_KEY);
-    return savedUrl && !savedUrl.startsWith('http://192.168.31.70') ? savedUrl : DEFAULT_SPARK_URL;
-  });
-  const [chatApiUrl, setChatApiUrl] = useState(() => localStorage.getItem(CHAT_API_URL_KEY) || DEFAULT_CHAT_API_URL);
   const [messages, setMessages] = useState(starterMessages);
   const [draft, setDraft] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [chatError, setChatError] = useState('');
 
-  const activeSparkUrl = useMemo(() => normalizeUrl(sparkUrl) || DEFAULT_SPARK_URL, [sparkUrl]);
-  const activeChatApiUrl = useMemo(() => normalizeUrl(chatApiUrl) || DEFAULT_CHAT_API_URL, [chatApiUrl]);
-
-  function saveSparkUrl() {
-    localStorage.setItem(SPARK_URL_KEY, activeSparkUrl);
-    localStorage.setItem(CHAT_API_URL_KEY, activeChatApiUrl);
-    setSparkUrl(activeSparkUrl);
-    setChatApiUrl(activeChatApiUrl);
-  }
-
   function openSpark() {
-    window.open(activeSparkUrl, '_blank', 'noopener,noreferrer');
+    window.open(DEFAULT_SPARK_URL, '_blank', 'noopener,noreferrer');
   }
 
   async function sendMessage(event) {
@@ -78,7 +51,7 @@ function Portal() {
     setChatError('');
 
     try {
-      const response = await fetch(activeChatApiUrl, {
+      const response = await fetch(DEFAULT_CHAT_API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: nextMessages }),
@@ -95,11 +68,6 @@ function Portal() {
     } finally {
       setIsSending(false);
     }
-  }
-
-  function clearChat() {
-    setMessages(starterMessages);
-    setChatError('');
   }
 
   return (
@@ -146,44 +114,7 @@ function Portal() {
               <p className="eyebrow">DGX Spark</p>
               <h2>{text.qwenWindow}</h2>
             </div>
-            <div className="portal-tool-buttons">
-              <button type="button" className="ghost-button small-button" onClick={clearChat}>
-                {text.clear}
-              </button>
-              <button type="button" className="ghost-button small-button" onClick={openSpark}>
-                {text.newWindow}
-              </button>
-            </div>
           </div>
-
-          <div className="spark-settings-grid">
-            <label className="spark-url-label" htmlFor="spark-url">
-              {text.sparkUrl}
-              <input
-                id="spark-url"
-                type="url"
-                value={sparkUrl}
-                onChange={(event) => setSparkUrl(event.target.value)}
-                placeholder={DEFAULT_SPARK_URL}
-              />
-            </label>
-            <label className="spark-url-label" htmlFor="chat-api-url">
-              {text.chatApiUrl}
-              <span className="spark-url-row">
-                <input
-                  id="chat-api-url"
-                  type="url"
-                  value={chatApiUrl}
-                  onChange={(event) => setChatApiUrl(event.target.value)}
-                  placeholder={DEFAULT_CHAT_API_URL}
-                />
-                <button type="button" className="primary-button" onClick={saveSparkUrl}>
-                  {text.save}
-                </button>
-              </span>
-            </label>
-          </div>
-          <p className="chat-api-hint">{text.apiHint}</p>
 
           <div className="boluo-chat-box">
             <div className="boluo-chat-messages" aria-live="polite">
