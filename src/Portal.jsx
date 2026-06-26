@@ -28,7 +28,8 @@ const text = {
   "newWindow": "\u65b0\u7a97\u53e3",
   "sparkUrl": "Spark \u5730\u5740",
   "save": "\u4fdd\u5b58",
-  "embedBlocked": "\u5f53\u524d\u4e2d\u8f6c\u9875\u662f HTTPS\uff0c\u6d4f\u89c8\u5668\u4e0d\u80fd\u76f4\u63a5\u5d4c\u5165 HTTP \u7684 Spark\u3002\u70b9\u201c\u65b0\u7a97\u53e3\u201d\u4f7f\u7528\uff0c\u6216\u628a Spark \u914d\u6210 HTTPS \u5730\u5740\u540e\u4fdd\u5b58\u3002"
+  "embedBlocked": "\u4f60\u7684 Spark \u5df2\u7ecf\u5728\u5c40\u57df\u7f51\u53ef\u8bbf\u95ee\uff0c\u4f46 GitHub Pages \u662f HTTPS\uff0c\u6d4f\u89c8\u5668\u4e0d\u5141\u8bb8\u5b83\u76f4\u63a5\u5d4c\u5165 HTTP \u7684 Spark \u7a97\u53e3\u3002\u70b9\u4e0b\u9762\u6309\u94ae\u4f1a\u5728\u65b0\u7a97\u53e3\u6253\u5f00\u804a\u5929\u9875\u3002",
+  "openSparkChat": "\u6253\u5f00 Spark \u804a\u5929"
 };
 
 function normalizeUrl(value) {
@@ -139,7 +140,12 @@ function Portal() {
 
           <div className="spark-frame">
             {blocksEmbed ? (
-              <div className="spark-frame-message">{text.embedBlocked}</div>
+              <div className="spark-frame-message">
+                <p>{text.embedBlocked}</p>
+                <button type="button" className="primary-button spark-open-button" onClick={openSpark}>
+                  {text.openSparkChat}
+                </button>
+              </div>
             ) : (
               <iframe
                 key={activeSparkUrl + '-' + frameKey}
