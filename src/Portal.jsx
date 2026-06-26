@@ -5,7 +5,7 @@ const DEFAULT_SPARK_URL = 'http://192.168.31.70:3000';
 const SPARK_URL_KEY = 'boluoSparkUrl';
 const text = {
   "hub": "\u83e0\u841d\u5de5\u4f5c\u53f0",
-  "title": "\u8bb0\u8d26\u548c\u672c\u5730 AI \u653e\u5728\u4e00\u4e2a\u5165\u53e3",
+  "title": "\u83e0\u841d\u5305\u70e4\u7bb1",
   "subtitle": "\u8fdb\u5165\u83e0\u841d\u8d26\u6237\u7ba1\u7406\u6536\u652f\uff0c\u4e5f\u53ef\u4ee5\u5728\u65c1\u8fb9\u8fde\u63a5 DGX Spark \u4e0a\u7684 Qwen\u3002",
   "account": "\u8fdb\u5165\u8bb0\u8d26",
   "openSpark": "\u6253\u5f00 Spark",
