@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import './portal.css';
 
-const DEFAULT_SPARK_URL = 'http://192.168.31.70:3000';
+const DEFAULT_SPARK_URL = 'https://fastest-context-dam-might.trycloudflare.com';
 const SPARK_URL_KEY = 'boluoSparkUrl';
 const text = {
   "hub": "\u83e0\u841d\u5de5\u4f5c\u53f0",
@@ -37,7 +37,10 @@ function normalizeUrl(value) {
 }
 
 function Portal() {
-  const [sparkUrl, setSparkUrl] = useState(() => localStorage.getItem(SPARK_URL_KEY) || DEFAULT_SPARK_URL);
+  const [sparkUrl, setSparkUrl] = useState(() => {
+    const savedUrl = localStorage.getItem(SPARK_URL_KEY);
+    return savedUrl && !savedUrl.startsWith('http://192.168.31.70') ? savedUrl : DEFAULT_SPARK_URL;
+  });
   const [frameKey, setFrameKey] = useState(0);
 
   const activeSparkUrl = useMemo(() => normalizeUrl(sparkUrl) || DEFAULT_SPARK_URL, [sparkUrl]);
