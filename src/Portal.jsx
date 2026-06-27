@@ -2,7 +2,7 @@ import { useState } from 'react';
 import './portal.css';
 
 const DEFAULT_SPARK_URL = 'https://fastest-context-dam-might.trycloudflare.com';
-const DEFAULT_CHAT_API_URL = 'https://atomic-divide-telecom-retailers.trycloudflare.com/api/chat';
+const DEFAULT_CHAT_API_URL = 'https://session-barnes-wide-move.trycloudflare.com/api/chat';
 const text = {
   hub: '菠萝工作台',
   title: '菠萝包烤箱',
